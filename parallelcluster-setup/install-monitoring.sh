@@ -9,6 +9,19 @@
 #source the AWS ParallelCluster profile
 . /etc/parallelcluster/cfnconfig
 
+#install docker
+sudo apt -y install apt-transport-https ca-certificates software-properties-common
+curl -fsSL https://download.docker.com/linux/ubuntu/gpg | sudo apt-key add -
+sudo add-apt-repository "deb [arch=amd64] https://download.docker.com/linux/ubuntu bionic stable"
+sudo apt -y install docker-ce
+sudo service docker start
+sudo systemctl enable docker.service
+sudo usermod -a -G docker $cfn_cluster_user
+
+#to be replaced with apt -y install docker-compose as the repository problem is fixed
+curl -L "https://github.com/docker/compose/releases/download/1.27.4/docker-compose-$(uname -s)-$(uname -m)" -o /usr/local/bin/docker-compose
+chmod +x /usr/local/bin/docker-compose
+
 monitoring_dir_name=aws-parallelcluster-monitoring
 monitoring_home="/home/${cfn_cluster_user}/${monitoring_dir_name}"
 
@@ -51,11 +64,11 @@ case "${cfn_node_type}" in
 		sed -i "s/__AWS_REGION__/${cfn_region}/g"           	${monitoring_home}/grafana/dashboards/ParallelCluster.json
 
 		sed -i "s/__AWS_REGION__/${cfn_region}/g"           	${monitoring_home}/grafana/dashboards/logs.json
-		sed -i "s/__LOG_GROUP__NAMES__/${log_group_name}/g"    ${monitoring_home}/grafana/dashboards/logs.json
+		sed -i "s/__LOG_GROUP__NAMES__/${log_group_name}/g"     ${monitoring_home}/grafana/dashboards/logs.json
 
 		sed -i "s/__Application__/${stack_name}/g"          	${monitoring_home}/prometheus/prometheus.yml
 		sed -i "s/__AWS_REGION__/${cfn_region}/g"          		${monitoring_home}/prometheus/prometheus.yml
-		sed -i "s/__CLUSTER_NAME__/${stack_name}/g"						${monitoring_home}/prometheus/prometheus.yml
+		sed -i "s/__CLUSTER_NAME__/${stack_name}/g"				${monitoring_home}/prometheus/prometheus.yml
 
 		sed -i "s/__INSTANCE_ID__/${master_instance_id}/g"  	${monitoring_home}/grafana/dashboards/master-node-details.json
 		sed -i "s/__INSTANCE_ID__/${master_instance_id}/g"  	${monitoring_home}/grafana/dashboards/compute-node-list.json
@@ -75,6 +88,9 @@ case "${cfn_node_type}" in
 		chown -R $cfn_cluster_user:$cfn_cluster_user "${nginx_ssl_dir}/nginx.crt"
 
 		/usr/local/bin/docker-compose --env-file /etc/parallelcluster/cfnconfig -f ${monitoring_home}/docker-compose/docker-compose.master.yml -p monitoring-master up -d
+
+        #install go
+		sudo apt-get -y install golang-go
 
 		# Download and build prometheus-slurm-exporter
 		##### Plese note this software package is under GPLv3 License #####
@@ -100,6 +116,15 @@ case "${cfn_node_type}" in
 		if [[ $compute_instance_type =~ $gpu_instances ]]; then
 			/usr/local/bin/docker-compose -f /home/${cfn_cluster_user}/${monitoring_dir_name}/docker-compose/docker-compose.compute.gpu.yml -p monitoring-compute up -d
         else
+			distribution=$(. /etc/os-release;echo $ID$VERSION_ID)
+			curl -fsSL https://nvidia.github.io/libnvidia-container/gpgkey | sudo gpg --dearmor -o /usr/share/keyrings/nvidia-container-toolkit-keyring.gpg
+			curl -s -L https://nvidia.github.io/libnvidia-container/$distribution/libnvidia-container.list | \
+			sed 's#deb https://#deb [signed-by=/usr/share/keyrings/nvidia-container-toolkit-keyring.gpg] https://#g' | \
+			sudo tee /etc/apt/sources.list.d/nvidia-container-toolkit.list
+			sudo apt-get update
+			sudo apt-get install -y nvidia-container-toolkit
+			sudo nvidia-ctk runtime configure --runtime=docker
+			sudo systemctl restart docker        	
 			/usr/local/bin/docker-compose -f /home/${cfn_cluster_user}/${monitoring_dir_name}/docker-compose/docker-compose.compute.yml -p monitoring-compute up -d
         fi
 	;;
